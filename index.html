@@ -103,8 +103,8 @@
       <p class="subtitle">اركض، اقفز، وتفادَ العوائق عبر الأسطح</p>
       <button id="startBtn" class="btn">ابدأ الجري</button>
       <div class="controls-hint">
-        المسافة أو السهم لأعلى (للشاشات اللمسية: النصف العلوي): <b>قفز</b><br />
-        السهم لأسفل (للشاشات اللمسية: النصف السفلي): <b>انزلاق</b>
+        الأسهم يميناً ويساراً لتغيير المسار، أعلى للقفز، وأسفل للانزلاق.<br />
+        على الهاتف: المس الجهة اليمنى أو اليسرى لتبديل المسار، والوسط أعلى للقفز وأسفل للانزلاق.
       </div>
     </div>
 
@@ -217,6 +217,10 @@
     const GRAVITY = 3200;
     const JUMP_V = 1200;
     const SLIDE_DUR = 0.74;
+    const LANE_CHANGE_DUR = 0.20;
+    const LANE_GROUND_OFFSETS = [-62, 0, 38];
+    const LANE_SCALES = [0.78, 1, 1.13];
+    const LANE_X_OFFSETS = [-24, 0, 24];
     const HIT_W = 44;
     const HIT_H = 120;
     const SLIDE_H = 56;
@@ -264,19 +268,40 @@
       };
     }
 
-    function obstacleRect(o, groundY) {
-      if (o.kind === "gap") return { x: o.x + 14, y: groundY - 6, w: Math.max(28, o.w - 28), h: 24 };
-      if (o.kind === "spike") return { x: o.x + 10, y: groundY - o.h, w: Math.max(24, o.w - 20), h: o.h };
-      if (o.kind === "dish") {
-        return { x: o.x + 10, y: groundY - 108 - o.h, w: Math.max(28, o.w - 20), h: o.h };
-      }
+    function laneValue(values, lane) {
+      const pos = Math.max(0, Math.min(2, lane ?? 1));
+      const lo = Math.floor(pos), hi = Math.min(2, lo + 1), t = pos - lo;
+      return values[lo] + (values[hi] - values[lo]) * t;
+    }
+    function laneScale(lane) { return laneValue(LANE_SCALES, lane); }
+    function laneGround(view, lane) { return view.ground + laneValue(LANE_GROUND_OFFSETS, lane); }
+    function laneX(baseX, lane) { return baseX + laneValue(LANE_X_OFFSETS, lane); }
+    function obstacleRect(o, groundY, scale = 1) {
+      if (o.kind === "gap") return { x: o.x + 14 * scale, y: groundY - 6 * scale, w: Math.max(28 * scale, (o.w - 28) * scale), h: 24 * scale };
+      if (o.kind === "spike") return { x: o.x + 10 * scale, y: groundY - o.h * scale, w: Math.max(24 * scale, (o.w - 20) * scale), h: o.h * scale };
+      if (o.kind === "dish") return { x: o.x + 10 * scale, y: groundY - 108 * scale - o.h * scale, w: Math.max(28 * scale, (o.w - 20) * scale), h: o.h * scale };
       if (o.kind === "beam" || o.kind === "line") {
         const lift = o.kind === "line" ? LINE_LIFT : BEAM_LIFT;
-        return { x: o.x + 8, y: groundY - lift - o.h, w: Math.max(22, o.w - 16), h: o.h };
+        return { x: o.x + 8 * scale, y: groundY - (lift + o.h) * scale, w: Math.max(22 * scale, (o.w - 16) * scale), h: o.h * scale };
       }
       const ix = o.kind === "wide" ? 10 : 12;
       const iy = o.kind === "wide" ? 8 : 14;
-      return { x: o.x + ix, y: groundY - o.h + iy, w: Math.max(18, o.w - ix * 2), h: Math.max(24, o.h - iy) };
+      return { x: o.x + ix * scale, y: groundY - o.h * scale + iy * scale, w: Math.max(18 * scale, (o.w - ix * 2) * scale), h: Math.max(24 * scale, (o.h - iy) * scale) };
+    }
+
+    function laneCollisionActive(s, lane) {
+      const visual = s.laneVisual ?? s.lane ?? 1;
+      return Math.abs(visual - lane) < 0.38;
+    }
+
+    function requestLaneChange(s, direction) {
+      if (s.phase !== "run" || s.laneChangeT > 0) return;
+      const next = Math.max(0, Math.min(2, s.lane + direction));
+      if (next === s.lane) return;
+      s.laneFrom = s.laneVisual;
+      s.lane = next;
+      s.laneTo = next;
+      s.laneChangeT = LANE_CHANGE_DUR;
     }
 
     function overlap(a, b) {
@@ -288,6 +313,12 @@
         phase: "menu",
         rng: mulberry32(Date.now()),
         playerX: 280,
+        lane: 1,
+        laneFrom: 1,
+        laneTo: 1,
+        laneVisual: 1,
+        laneChangeT: 0,
+        slideBlend: 0,
         posY: 0,
         vy: 0,
         onGround: true,
@@ -357,6 +388,9 @@
       s.rng = mulberry32(Date.now());
       s.phase = "run";
       s.posY = 0;
+      s.lane = s.laneFrom = s.laneTo = s.laneVisual = 1;
+      s.laneChangeT = 0;
+      s.slideBlend = 0;
       s.vy = 0;
       s.onGround = true;
       s.coyote = COYOTE;
@@ -396,6 +430,7 @@
       o.alive = true;
       o.kind = kind;
       o.cleared = false;
+      o.lane = Math.floor(s.rng() * 3);
       o.x = x;
       o.variant = Math.floor(s.rng() * BLOCKS.length);
       if (kind === "beam") { o.w = BEAM_W; o.h = BEAM_H; }
@@ -413,13 +448,13 @@
       return o;
     }
 
-    function dropPrize(s, x, y, prize) {
+    function dropPrize(s, x, y, prize, lane = 1) {
       const c = s.coins.find(item => !item.alive);
       if (!c) return;
-      c.alive = true; c.x = x; c.y = y; c.spin = s.rng() * 6; c.prize = prize;
+      c.alive = true; c.x = x; c.y = y; c.spin = s.rng() * 6; c.prize = prize; c.lane = lane;
     }
 
-    function sprayPrizes(s, x0, style, rich) {
+    function sprayPrizes(s, x0, style, rich, lane = 1) {
       const n = style === "high" ? 5 : 4;
       for (let i = 0; i < n; i++) {
         let prize = "coin";
@@ -429,7 +464,7 @@
         if (style === "under") y = 36;
         else if (style === "high") y = 150 + Math.sin(i * 1.15) * 26;
         else if (i % 2 === 0) y = 96;
-        dropPrize(s, x0 + i * 46, y, prize);
+        dropPrize(s, x0 + i * 46, y, prize, lane);
       }
     }
 
@@ -454,7 +489,7 @@
       if (!placed) return;
       const gapPx = s.speed * (overhead(kind) ? 0.95 : 0.9);
       if (kind !== "gap" && s.rng() < 0.8) {
-        sprayPrizes(s, placed.x + placed.w + 20, overhead(kind) ? "under" : "low", s.rng() < 0.3);
+        sprayPrizes(s, placed.x + placed.w + 20, overhead(kind) ? "under" : "low", s.rng() < 0.3, placed.lane);
       }
       s.nextX = placed.x + placed.w + gapPx;
       s.lastKind = kind;
@@ -489,6 +524,7 @@
 
       if (s.phase === "menu") {
         s.playerX = view.w * 0.24;
+        s.laneVisual = 1;
         s.scroll += 78 * dt;
         s.anim += dt * 8;
         return;
@@ -520,7 +556,25 @@
       }
 
       s.speed = speedFor(s.distance);
-      s.playerX = s.viewW * 0.24;
+      const basePlayerX = s.viewW * 0.24;
+      if (input.laneLeft) { requestLaneChange(s, -1); input.laneLeft = false; }
+      if (input.laneRight) { requestLaneChange(s, 1); input.laneRight = false; }
+      if (s.laneChangeT > 0) {
+        s.laneChangeT = Math.max(0, s.laneChangeT - dt);
+        const progress = 1 - s.laneChangeT / LANE_CHANGE_DUR;
+        const eased = progress * progress * (3 - 2 * progress);
+        s.laneVisual = s.laneFrom + (s.laneTo - s.laneFrom) * eased;
+      } else {
+        s.laneVisual = s.lane;
+      }
+      s.playerX = laneX(basePlayerX, Math.round(s.laneVisual));
+      if (s.laneChangeT > 0) {
+        const fromX = laneX(basePlayerX, Math.round(s.laneFrom));
+        const toX = laneX(basePlayerX, s.laneTo);
+        const progress = 1 - s.laneChangeT / LANE_CHANGE_DUR;
+        const eased = progress * progress * (3 - 2 * progress);
+        s.playerX = fromX + (toX - fromX) * eased;
+      }
 
       if (input.jump) s.jumpBuf = BUFFER; else s.jumpBuf = Math.max(0, s.jumpBuf - dt);
       if (input.slide) s.slideBuf = BUFFER; else s.slideBuf = Math.max(0, s.slideBuf - dt);
@@ -535,7 +589,7 @@
         burst(s, s.playerX, s.groundY - 8, 7, ["#d7b48a", "#f4ede3"], 90, 400);
       } else if (s.jumpBuf > 0 && (s.onGround || s.coyote > 0)) {
         s.slideT = 0;
-        s.vy = JUMP_V;
+        s.vy = JUMP_V * laneScale(s.lane);
         s.onGround = false;
         s.coyote = 0;
         s.jumpBuf = 0;
@@ -545,9 +599,12 @@
       }
 
       if (s.slideT > 0) {
-        s.slideT -= dt;
+        s.slideT = Math.max(0, s.slideT - dt);
         s.slideAge += dt;
       }
+      const slideTarget = s.slideT > 0 ? 1 : 0;
+      s.slideBlend += (slideTarget - s.slideBlend) * (1 - Math.exp(-18 * dt));
+      if (s.slideT === 0 && s.slideBlend < 0.015) s.slideBlend = 0;
 
       if (!s.onGround || s.vy > 0) {
         s.vy -= GRAVITY * dt;
@@ -583,13 +640,18 @@
         if (c.x < -40) c.alive = false;
       });
 
-      const bodyW = s.slideT > 0 ? SLIDE_W : HIT_W;
-      const bodyH = s.slideT > 0 ? SLIDE_H : HIT_H;
-      const bodyRect = { x: s.playerX - bodyW / 2, y: s.groundY - s.posY - bodyH, w: bodyW, h: bodyH };
+      const playerScale = laneScale(s.laneVisual);
+      const playerGround = laneGround(view, s.laneVisual);
+      const bodyW = (s.slideBlend > 0.5 ? SLIDE_W : HIT_W) * playerScale;
+      const bodyH = (s.slideBlend > 0.5 ? SLIDE_H : HIT_H) * playerScale;
+      const bodyRect = { x: s.playerX - bodyW / 2, y: playerGround - s.posY - bodyH, w: bodyW, h: bodyH };
 
       s.coins.forEach(c => {
         if (!c.alive) return;
-        const cy = s.groundY - c.y;
+        if (!laneCollisionActive(s, c.lane ?? 1)) return;
+        const coinGround = laneGround(view, c.lane ?? 1);
+        const coinScale = laneScale(c.lane ?? 1);
+        const cy = coinGround - c.y * coinScale;
         const distSq = (c.x - s.playerX) ** 2 + (cy - (bodyRect.y + bodyH * 0.5)) ** 2;
         if (distSq < 48 * 48) {
           c.alive = false;
@@ -605,8 +667,9 @@
 
       s.obstacles.forEach(o => {
         if (!o.alive) return;
-        const oRect = obstacleRect(o, s.groundY);
-        if (!o.cleared && overlap(bodyRect, oRect)) {
+        const sameLane = laneCollisionActive(s, o.lane ?? 1);
+        const oRect = obstacleRect(o, laneGround(view, o.lane ?? 1), laneScale(o.lane ?? 1));
+        if (!o.cleared && sameLane && overlap(bodyRect, oRect)) {
           s.phase = "dying";
           s.deathT = 0;
           s.flash = 0.85;
@@ -686,10 +749,27 @@
         ctx.fillRect(bx, view.ground - 160 - (i % 4) * 25, 140, 200);
       }
 
+      // أسطح المدينة متصلة بصرياً، مع ثلاث طبقات عمق واضحة وغير منفصلة تماماً.
+      ctx.fillStyle = "#8b7058";
+      ctx.fillRect(0, view.ground - 70, view.w, view.h - (view.ground - 70));
+      ctx.fillStyle = "#c4a078";
+      ctx.fillRect(0, view.ground - 62, view.w, 8);
       ctx.fillStyle = "#d2b084";
-      ctx.fillRect(0, view.ground, view.w, view.h - view.ground);
+      ctx.fillRect(0, view.ground - 4, view.w, view.h - (view.ground - 4));
       ctx.fillStyle = "#8a6848";
-      ctx.fillRect(0, view.ground + 18, view.w, 14);
+      ctx.fillRect(0, view.ground + 14, view.w, 12);
+      ctx.fillStyle = "#b48b62";
+      ctx.fillRect(0, view.ground + 38, view.w, Math.max(0, view.h - (view.ground + 38)));
+      ctx.fillStyle = "rgba(20,16,26,0.22)";
+      ctx.fillRect(0, view.ground - 2, view.w, 4);
+      ctx.fillRect(0, view.ground + 37, view.w, 3);
+      // خطوط إرشادية متقطعة تتحرك مع اللاعب لتعطي إحساساً بالسرعة.
+      ctx.fillStyle = "rgba(244,237,227,0.28)";
+      for (let i = 0; i < 12; i++) {
+        const lx = ((i * 150 - s.scroll * 0.9) % (view.w + 150)) - 75;
+        ctx.fillRect(lx, view.ground + 29, 52, 3);
+        ctx.fillRect(lx, view.ground - 35, 38, 2);
+      }
     }
 
     function drawHeroGraphic(ctx, s, x, feetY) {
@@ -700,21 +780,23 @@
         ctx.translate(-x, -(feetY - 60));
       }
 
-      const sliding = s.slideT > 0;
+      const sliding = s.slideBlend > 0.45;
       const airborne = s.posY > 1;
       const group = sliding ? "slide" : (airborne ? "jump" : "run");
       const frames = spriteFrames[group] || [];
       const frameIndex = frames.length ? Math.floor(s.anim * (sliding ? 5 : 1.7)) % frames.length : 0;
       const img = frames[frameIndex];
-      const drawW = sliding ? 176 : 148;
-      const drawH = sliding ? 144 : 148;
+      const lanePos = s.laneVisual ?? 1;
+      const scale = laneScale(lanePos);
+      const drawW = (sliding ? 176 : 148) * scale;
+      const drawH = (sliding ? 144 : 148) * scale;
       const drawX = x - drawW / 2;
       const drawY = feetY - drawH;
 
       // ظل خفيف أسفل الشخصية
       ctx.fillStyle = "rgba(20, 16, 20, 0.28)";
       ctx.beginPath();
-      ctx.ellipse(x, feetY + 3, sliding ? 48 : 29, 7, 0, 0, Math.PI * 2);
+      ctx.ellipse(x, feetY + 3, (sliding ? 48 : 29) * scale, 7 * scale, 0, 0, Math.PI * 2);
       ctx.fill();
 
       if (!drawSprite_(ctx, img, drawX, drawY, drawW, drawH)) {
@@ -736,40 +818,45 @@
     function drawObstacles(ctx, s, ground) {
       s.obstacles.forEach(o => {
         if (!o.alive) return;
-        const rect = obstacleRect(o, ground);
+        const scale = laneScale(o.lane ?? 1);
+        const laneFloor = ground + LANE_GROUND_OFFSETS[o.lane ?? 1];
+        const rect = obstacleRect(o, laneFloor, scale);
+        const ox = o.x;
+        const ow = o.w * scale;
+        const oh = o.h * scale;
 
         if (o.kind === "gap") {
           ctx.fillStyle = "#14101a";
-          ctx.fillRect(rect.x, ground, rect.w, 40);
+          ctx.fillRect(rect.x, laneFloor, rect.w, 40 * scale);
           ctx.fillStyle = "#8a6848";
-          ctx.fillRect(rect.x - 5, ground, 5, 8);
-          ctx.fillRect(rect.x + rect.w, ground, 5, 8);
+          ctx.fillRect(rect.x - 5 * scale, laneFloor, 5 * scale, 8 * scale);
+          ctx.fillRect(rect.x + rect.w, laneFloor, 5 * scale, 8 * scale);
           return;
         }
 
         if (o.kind === "spike") {
-          if (!drawSprite_(ctx, spriteImages.spike, o.x, ground - 76, o.w, 76)) {
+          if (!drawSprite_(ctx, spriteImages.spike, ox, laneFloor - 76 * scale, ow, 76 * scale)) {
             ctx.fillStyle = "#c45c3e";
             ctx.beginPath();
-            ctx.moveTo(rect.x, ground);
-            ctx.lineTo(rect.x + rect.w / 2, ground - rect.h);
-            ctx.lineTo(rect.x + rect.w, ground);
+            ctx.moveTo(rect.x, laneFloor);
+            ctx.lineTo(rect.x + rect.w / 2, laneFloor - rect.h);
+            ctx.lineTo(rect.x + rect.w, laneFloor);
             ctx.fill();
           }
         } else if (o.kind === "barrel") {
-          if (!drawSprite_(ctx, spriteImages.barrel, o.x, ground - o.h - 7, o.w, o.h + 7)) {
+          if (!drawSprite_(ctx, spriteImages.barrel, ox, laneFloor - oh - 7 * scale, ow, oh + 7 * scale)) {
             ctx.fillStyle = "#6d543f";
             ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
           }
         } else if (o.kind === "dish") {
-          if (!drawSprite_(ctx, spriteImages.dish, o.x, ground - 166, o.w, 166)) {
+          if (!drawSprite_(ctx, spriteImages.dish, ox, laneFloor - 166 * scale, ow, 166 * scale)) {
             ctx.fillStyle = "#a84b30";
             ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
           }
         } else if (o.kind === "beam" || o.kind === "line") {
           const lift = o.kind === "line" ? LINE_LIFT : BEAM_LIFT;
           const beamH = o.kind === "line" ? 38 : 48;
-          if (!drawSprite_(ctx, spriteImages.beam, o.x, ground - lift - beamH + 6, o.w, beamH)) {
+          if (!drawSprite_(ctx, spriteImages.beam, ox, laneFloor - (lift + beamH - 6) * scale, ow, beamH * scale)) {
             ctx.fillStyle = "#a84b30";
             ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
             ctx.strokeStyle = "#e8b15a";
@@ -777,7 +864,7 @@
             ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
           }
         } else {
-          if (!drawSprite_(ctx, spriteImages.crate, rect.x - 5, rect.y - 4, rect.w + 10, rect.h + 8)) {
+          if (!drawSprite_(ctx, spriteImages.crate, rect.x - 5 * scale, rect.y - 4 * scale, rect.w + 10 * scale, rect.h + 8 * scale)) {
             ctx.fillStyle = "#5e463c";
             ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
             ctx.fillStyle = "#e8b15a";
@@ -790,17 +877,19 @@
     function drawCoins(ctx, s, ground) {
       s.coins.forEach(c => {
         if (!c.alive) return;
-        const cy = ground - c.y;
+        const scale = laneScale(c.lane ?? 1);
+        const laneFloor = ground + LANE_GROUND_OFFSETS[c.lane ?? 1];
+        const cy = laneFloor - c.y * scale;
         ctx.save();
         ctx.translate(c.x, cy);
         const coinFrames = [spriteImages.coin1, spriteImages.coin2, spriteImages.coin3, spriteImages.coin4];
         const coinImg = c.prize === "gem"
           ? spriteImages.star
           : coinFrames[Math.floor(c.spin / 1.5) % coinFrames.length];
-        if (!drawSprite_(ctx, coinImg, -18, -18, 36, 36)) {
+        if (!drawSprite_(ctx, coinImg, -18 * scale, -18 * scale, 36 * scale, 36 * scale)) {
           ctx.fillStyle = c.prize === "gold" ? "#ffd700" : "#e8b15a";
           ctx.beginPath();
-          ctx.arc(0, 0, 16, 0, Math.PI * 2);
+          ctx.arc(0, 0, 16 * scale, 0, Math.PI * 2);
           ctx.fill();
           ctx.fillStyle = "#fff";
           ctx.font = "bold 12px sans-serif";
@@ -818,7 +907,8 @@
       drawObstacles(ctx, s, view.ground);
       drawCoins(ctx, s, view.ground);
 
-      const feetY = view.ground - s.posY;
+      const playerScale = laneScale(s.laneVisual ?? 1);
+      const feetY = laneGround(view, s.laneVisual ?? 1) - s.posY;
       drawHeroGraphic(ctx, s, s.playerX, feetY);
 
       s.particles.forEach(p => {
@@ -860,7 +950,7 @@
     const ctx = canvas.getContext("2d");
     const sound = new SoundEngine();
     const state = createGameState();
-    const input = { jump: false, slide: false };
+    const input = { jump: false, slide: false, laneLeft: false, laneRight: false };
 
     const startScreen = document.getElementById("startScreen");
     const overScreen = document.getElementById("overScreen");
@@ -888,27 +978,34 @@
         e.preventDefault();
         input.slide = true;
       }
+      if (e.code === "ArrowLeft" || e.code === "KeyA") { e.preventDefault(); input.laneLeft = true; }
+      if (e.code === "ArrowRight" || e.code === "KeyD") { e.preventDefault(); input.laneRight = true; }
     });
 
     window.addEventListener("keyup", (e) => {
       if (e.code === "Space" || e.code === "ArrowUp") input.jump = false;
       if (e.code === "ArrowDown") input.slide = false;
+      if (e.code === "ArrowLeft" || e.code === "KeyA") input.laneLeft = false;
+      if (e.code === "ArrowRight" || e.code === "KeyD") input.laneRight = false;
     });
 
     window.addEventListener("touchstart", (e) => {
       sound.init();
       if (e.target.closest("button")) return;
-      const touchY = e.touches[0].clientY;
-      if (touchY < window.innerHeight * 0.5) {
-        input.jump = true;
-      } else {
-        input.slide = true;
-      }
+      const touch = e.changedTouches[0];
+      const touchX = touch.clientX;
+      const touchY = touch.clientY;
+      if (touchX < window.innerWidth * 0.30) input.laneLeft = true;
+      else if (touchX > window.innerWidth * 0.70) input.laneRight = true;
+      else if (touchY < window.innerHeight * 0.52) input.jump = true;
+      else input.slide = true;
     }, { passive: true });
 
     window.addEventListener("touchend", () => {
       input.jump = false;
       input.slide = false;
+      // لا نمسح تغيير المسار هنا؛ قد تنتهي اللمسة قبل إطار الرسم التالي.
+      // updateGame يستهلك طلب تغيير المسار مرة واحدة.
     });
 
     function launchRun() {
