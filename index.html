@@ -47,11 +47,8 @@
       justify-content: center;
       align-items: center;
       color: #f4ede3;
-      pointer-events: none;
-      z-index: 10;
-    }
-    .active-ui {
-      pointer-events: auto;
+      z-index: 100;
+      background: rgba(20, 16, 26, 0.45);
     }
     h1.title {
       font-size: 4rem;
@@ -71,13 +68,14 @@
       color: #f4ede3;
       border: none;
       border-radius: 9999px;
-      padding: 0.9rem 2.6rem;
-      font-size: 1.4rem;
+      padding: 1rem 3rem;
+      font-size: 1.5rem;
       font-family: inherit;
       font-weight: 700;
       cursor: pointer;
       box-shadow: 0 6px 20px rgba(196, 92, 62, 0.45);
       transition: transform 0.1s ease, background-color 0.2s;
+      pointer-events: auto;
     }
     .btn:active {
       transform: scale(0.96);
@@ -88,6 +86,7 @@
       font-size: 0.95rem;
       opacity: 0.75;
       text-align: center;
+      line-height: 1.6;
     }
     .hidden {
       display: none !important;
@@ -99,7 +98,7 @@
     <canvas id="gameCanvas"></canvas>
 
     <!-- واجهة البداية -->
-    <div id="startScreen" class="overlay active-ui">
+    <div id="startScreen" class="overlay">
       <h1 class="title">أُفُـق</h1>
       <p class="subtitle">اركض، اقفز، وتفادَ العوائق عبر الأسطح</p>
       <button id="startBtn" class="btn">ابدأ الجري</button>
@@ -118,9 +117,6 @@
   </div>
 
   <script>
-    /* =========================================================================
-       1. محرك المؤثرات الصوتية (SFX WebAudio)
-       ========================================================================= */
     class SoundEngine {
       constructor() {
         this.ctx = null;
@@ -130,48 +126,60 @@
         this.musicT = 0;
       }
       init() {
-        if (!this.ctx) {
-          const AudioCtx = window.AudioContext || window.webkitAudioContext;
-          this.ctx = new AudioCtx();
-          const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.4, this.ctx.sampleRate);
-          const data = buffer.getChannelData(0);
-          for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-          this.noise = buffer;
+        try {
+          if (!this.ctx) {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+              this.ctx = new AudioCtx();
+              const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * 0.4), this.ctx.sampleRate);
+              const data = buffer.getChannelData(0);
+              for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+              this.noise = buffer;
+            }
+          }
+          if (this.ctx && this.ctx.state === "suspended") {
+            this.ctx.resume();
+          }
+        } catch (e) {
+          console.warn("AudioContext init error:", e);
         }
-        if (this.ctx.state === "suspended") this.ctx.resume();
       }
       tone(freq, dur, type, gain, to) {
         if (this.muted || !this.ctx) return;
-        const t = this.ctx.currentTime;
-        const osc = this.ctx.createOscillator();
-        const amp = this.ctx.createGain();
-        osc.type = type;
-        osc.frequency.setValueAtTime(freq, t);
-        if (to && to > 0) osc.frequency.exponentialRampToValueAtTime(Math.max(40, to), t + dur);
-        amp.gain.setValueAtTime(gain, t);
-        amp.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-        osc.connect(amp);
-        amp.connect(this.ctx.destination);
-        osc.start(t);
-        osc.stop(t + dur + 0.02);
+        try {
+          const t = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const amp = this.ctx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, t);
+          if (to && to > 0) osc.frequency.exponentialRampToValueAtTime(Math.max(40, to), t + dur);
+          amp.gain.setValueAtTime(gain, t);
+          amp.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          osc.connect(amp);
+          amp.connect(this.ctx.destination);
+          osc.start(t);
+          osc.stop(t + dur + 0.02);
+        } catch (e) {}
       }
       hiss(dur, gain, freq) {
         if (this.muted || !this.ctx || !this.noise) return;
-        const t = this.ctx.currentTime;
-        const src = this.ctx.createBufferSource();
-        src.buffer = this.noise;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = "bandpass";
-        filter.frequency.value = freq;
-        filter.Q.value = 0.7;
-        const amp = this.ctx.createGain();
-        amp.gain.setValueAtTime(gain, t);
-        amp.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-        src.connect(filter);
-        filter.connect(amp);
-        amp.connect(this.ctx.destination);
-        src.start(t);
-        src.stop(t + dur);
+        try {
+          const t = this.ctx.currentTime;
+          const src = this.ctx.createBufferSource();
+          src.buffer = this.noise;
+          const filter = this.ctx.createBiquadFilter();
+          filter.type = "bandpass";
+          filter.frequency.value = freq;
+          filter.Q.value = 0.7;
+          const amp = this.ctx.createGain();
+          amp.gain.setValueAtTime(gain, t);
+          amp.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          src.connect(filter);
+          filter.connect(amp);
+          amp.connect(this.ctx.destination);
+          src.start(t);
+          src.stop(t + dur);
+        } catch (e) {}
       }
       jump() {
         this.tone(220, 0.16, "square", 0.045, 640);
@@ -188,10 +196,6 @@
         const base = 680 + Math.min(6, mult) * 40;
         this.tone(base, 0.08, "sine", 0.05);
         this.tone(base * 1.5, 0.12, "triangle", 0.04);
-      }
-      combo(mult) {
-        this.tone(440, 0.08, "triangle", 0.04);
-        this.tone(440 * (1 + mult * 0.04), 0.14, "sine", 0.05);
       }
       hit() {
         this.hiss(0.28, 0.09, 140);
@@ -210,9 +214,6 @@
       }
     }
 
-    /* =========================================================================
-       2. محاكي اللعبة والفيزياء (SIMULATION)
-       ========================================================================= */
     const GRAVITY = 3200;
     const JUMP_V = 1200;
     const SLIDE_DUR = 0.74;
@@ -226,7 +227,6 @@
     const BEAM_H = 42;
     const BEAM_W = 72;
     const LINE_LIFT = 86;
-    const AIR_TIME = (2 * JUMP_V) / GRAVITY;
 
     const BLOCKS = [
       { w: 76, h: 96 },
@@ -268,8 +268,7 @@
       if (o.kind === "gap") return { x: o.x + 14, y: groundY - 6, w: Math.max(28, o.w - 28), h: 24 };
       if (o.kind === "spike") return { x: o.x + 10, y: groundY - o.h, w: Math.max(24, o.w - 20), h: o.h };
       if (o.kind === "dish") {
-        const lift = 108;
-        return { x: o.x + 10, y: groundY - lift - o.h, w: Math.max(28, o.w - 20), h: o.h };
+        return { x: o.x + 10, y: groundY - 108 - o.h, w: Math.max(28, o.w - 20), h: o.h };
       }
       if (o.kind === "beam" || o.kind === "line") {
         const lift = o.kind === "line" ? LINE_LIFT : BEAM_LIFT;
@@ -315,20 +314,13 @@
         deathT: 0,
         rot: 0,
         rotV: 0,
-        hitstop: 0,
         flash: 0,
         trauma: 0,
         floaters: Array.from({ length: 14 }, () => ({ alive: false })),
         particles: Array.from({ length: 96 }, () => ({ alive: false })),
         squash: 1,
-        comboPop: 0,
-        shield: 0,
-        magnetT: 0,
-        starT: 0,
-        invuln: 0,
         viewW: 1280,
-        groundY: 560,
-        dustT: 0
+        groundY: 560
       };
     }
 
@@ -386,16 +378,9 @@
       s.deathT = 0;
       s.rot = 0;
       s.rotV = 0;
-      s.hitstop = 0;
       s.flash = 0;
       s.trauma = 0;
       s.squash = 0.78;
-      s.comboPop = 0;
-      s.shield = 0;
-      s.magnetT = 0;
-      s.starT = 0;
-      s.invuln = 0;
-      s.dustT = 0;
       s.playerX = view.w * 0.24;
       s.viewW = view.w;
       s.groundY = view.ground;
@@ -453,15 +438,13 @@
     function pickKind(s, diff) {
       const roll = s.rng();
       if (s.spawned === 0) return "block";
-      if (roll < 0.12) return "block";
-      if (roll < 0.24) return "barrel";
-      if (roll < 0.36) return "wide";
-      if (roll < 0.48) return "spike";
-      if (roll < 0.6) return "tall";
-      if (roll < 0.72) return "beam";
-      if (roll < 0.82) return "line";
-      if (roll < 0.92) return "dish";
-      return diff > 0.18 ? "gap" : "spike";
+      if (roll < 0.14) return "block";
+      if (roll < 0.28) return "barrel";
+      if (roll < 0.42) return "wide";
+      if (roll < 0.56) return "spike";
+      if (roll < 0.70) return "tall";
+      if (roll < 0.82) return "beam";
+      return diff > 0.18 ? "gap" : "dish";
     }
 
     function spawnNext(s) {
@@ -482,11 +465,9 @@
       s.viewW = view.w;
       s.groundY = view.ground;
 
-      // تأثيرات الفلاش والاهتزاز
       s.squash += (1 - s.squash) * (1 - Math.exp(-14 * dt));
       s.flash = Math.max(0, s.flash - dt * 3.4);
       s.trauma = Math.max(0, s.trauma - dt * 1.65);
-      s.comboPop = Math.max(0, s.comboPop - dt * 2.4);
 
       s.particles.forEach(p => {
         if (!p.alive) return;
@@ -538,18 +519,13 @@
         return;
       }
 
-      // مرحلة الجري المستمر (RUN)
       s.speed = speedFor(s.distance);
       s.playerX = s.viewW * 0.24;
-      s.invuln = Math.max(0, s.invuln - dt);
-      s.magnetT = Math.max(0, s.magnetT - dt);
-      s.starT = Math.max(0, s.starT - dt);
 
       if (input.jump) s.jumpBuf = BUFFER; else s.jumpBuf = Math.max(0, s.jumpBuf - dt);
       if (input.slide) s.slideBuf = BUFFER; else s.slideBuf = Math.max(0, s.slideBuf - dt);
       if (s.onGround) s.coyote = COYOTE; else s.coyote = Math.max(0, s.coyote - dt);
 
-      // قفز وانزلاق
       if ((input.slide || s.slideBuf > 0) && s.slideT <= 0 && s.onGround) {
         s.slideT = SLIDE_DUR;
         s.slideAge = 0;
@@ -591,7 +567,6 @@
         }
       }
 
-      // حركة العالم
       const dx = s.speed * dt;
       s.scroll += dx;
       s.distance += dx;
@@ -608,7 +583,6 @@
         if (c.x < -40) c.alive = false;
       });
 
-      // اصطدام النقود
       const bodyW = s.slideT > 0 ? SLIDE_W : HIT_W;
       const bodyH = s.slideT > 0 ? SLIDE_H : HIT_H;
       const bodyRect = { x: s.playerX - bodyW / 2, y: s.groundY - s.posY - bodyH, w: bodyW, h: bodyH };
@@ -629,12 +603,10 @@
         }
       });
 
-      // اصطدام العوائق
       s.obstacles.forEach(o => {
         if (!o.alive) return;
         const oRect = obstacleRect(o, s.groundY);
         if (!o.cleared && overlap(bodyRect, oRect)) {
-          if (s.invuln > 0) return;
           s.phase = "dying";
           s.deathT = 0;
           s.flash = 0.85;
@@ -650,3 +622,286 @@
           const mult = multiplier(s.streak);
           const pts = 20 * mult;
           s.bonus += pts;
+          floatText(s, oRect.x + oRect.w / 2, oRect.y - 8, `+${pts}`, false);
+        }
+      });
+
+      while (s.nextX < view.w + 400) {
+        spawnNext(s);
+      }
+
+      s.score = totalScore(s.distance, s.bonus);
+      s.anim += dt * (8.5 + s.speed / 150);
+    }
+
+    function drawSkyAndBuildings(ctx, s, view) {
+      const grad = ctx.createLinearGradient(0, 0, 0, view.ground);
+      grad.addColorStop(0, "#1a2140");
+      grad.addColorStop(0.5, "#4a5d86");
+      grad.addColorStop(1, "#e7a27a");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, view.w, view.h);
+
+      ctx.fillStyle = "#f2c48a";
+      ctx.beginPath();
+      ctx.arc(view.w * 0.75, view.ground - 180, 52, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#2a3358";
+      for (let i = 0; i < 15; i++) {
+        const bx = ((i * 180 - s.scroll * 0.15) % (view.w + 200)) - 100;
+        ctx.fillRect(bx, view.ground - 220 - (i % 3) * 30, 110, 260);
+      }
+
+      ctx.fillStyle = "#5e463c";
+      for (let i = 0; i < 12; i++) {
+        const bx = ((i * 220 - s.scroll * 0.35) % (view.w + 260)) - 120;
+        ctx.fillRect(bx, view.ground - 160 - (i % 4) * 25, 140, 200);
+      }
+
+      ctx.fillStyle = "#d2b084";
+      ctx.fillRect(0, view.ground, view.w, view.h - view.ground);
+      ctx.fillStyle = "#8a6848";
+      ctx.fillRect(0, view.ground + 18, view.w, 14);
+    }
+
+    function drawHeroGraphic(ctx, s, x, feetY) {
+      ctx.save();
+      ctx.translate(x, feetY);
+      if (s.phase === "dying") ctx.rotate(s.rot);
+
+      const sliding = s.slideT > 0;
+      const h = sliding ? 60 : 130;
+      const w = sliding ? 120 : 56;
+
+      ctx.fillStyle = "rgba(20, 16, 20, 0.35)";
+      ctx.beginPath();
+      ctx.ellipse(0, 4, sliding ? 46 : 28, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1c1c1c";
+      ctx.fillRect(-w * 0.35, -h * 0.45, w * 0.7, h * 0.45);
+
+      ctx.fillStyle = "#f4ede3";
+      ctx.fillRect(-w * 0.3, -h * 0.82, w * 0.6, h * 0.4);
+
+      ctx.fillStyle = "#c45c3e";
+      ctx.fillRect(-w * 0.25, -h * 0.88, w * 0.55, 16);
+
+      ctx.fillStyle = "#c48a62";
+      ctx.beginPath();
+      ctx.arc(0, -h * 0.92, 16, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#14101a";
+      ctx.beginPath();
+      ctx.arc(0, -h * 0.98, 14, Math.PI, 0);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawObstacles(ctx, s, ground) {
+      s.obstacles.forEach(o => {
+        if (!o.alive) return;
+        const rect = obstacleRect(o, ground);
+
+        if (o.kind === "spike") {
+          ctx.fillStyle = "#c45c3e";
+          ctx.beginPath();
+          ctx.moveTo(rect.x, ground);
+          ctx.lineTo(rect.x + rect.w / 2, ground - rect.h);
+          ctx.lineTo(rect.x + rect.w, ground);
+          ctx.fill();
+        } else if (o.kind === "barrel") {
+          ctx.fillStyle = "#6d543f";
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 8);
+          else ctx.rect(rect.x, rect.y, rect.w, rect.h);
+          ctx.fill();
+          ctx.fillStyle = "#3d2d1e";
+          ctx.fillRect(rect.x, rect.y + 12, rect.w, 6);
+          ctx.fillRect(rect.x, rect.y + rect.h - 18, rect.w, 6);
+        } else if (o.kind === "beam" || o.kind === "dish" || o.kind === "line") {
+          ctx.fillStyle = "#a84b30";
+          ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+          ctx.strokeStyle = "#e8b15a";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+        } else if (o.kind === "gap") {
+          ctx.fillStyle = "#14101a";
+          ctx.fillRect(rect.x, ground, rect.w, 40);
+        } else {
+          ctx.fillStyle = "#5e463c";
+          ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+          ctx.fillStyle = "#e8b15a";
+          ctx.fillRect(rect.x + 8, rect.y + 10, rect.w - 16, 8);
+        }
+      });
+    }
+
+    function drawCoins(ctx, s, ground) {
+      s.coins.forEach(c => {
+        if (!c.alive) return;
+        const cy = ground - c.y;
+        ctx.save();
+        ctx.translate(c.x, cy);
+        ctx.fillStyle = c.prize === "gold" ? "#ffd700" : "#e8b15a";
+        ctx.beginPath();
+        ctx.arc(0, 0, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("★", 0, 1);
+        ctx.restore();
+      });
+    }
+
+    function renderFrame(ctx, s, view) {
+      ctx.clearRect(0, 0, view.w, view.h);
+      drawSkyAndBuildings(ctx, s, view);
+      drawObstacles(ctx, s, view.ground);
+      drawCoins(ctx, s, view.ground);
+
+      const feetY = view.ground - s.posY;
+      drawHeroGraphic(ctx, s, s.playerX, feetY);
+
+      s.particles.forEach(p => {
+        if (!p.alive) return;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      ctx.font = "700 20px 'Readex Pro', sans-serif";
+      ctx.textAlign = "center";
+      s.floaters.forEach(f => {
+        if (!f.alive) return;
+        ctx.fillStyle = f.gold ? "#ffd700" : "#f4ede3";
+        ctx.fillText(f.text, f.x, f.y);
+      });
+
+      if (s.phase === "run") {
+        ctx.fillStyle = "#f4ede3";
+        ctx.font = "700 32px 'Readex Pro', sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(`النتيجة: ${s.score}`, 32, 54);
+
+        if (s.streak > 2) {
+          ctx.fillStyle = "#ffd700";
+          ctx.font = "600 20px 'Readex Pro', sans-serif";
+          ctx.fillText(`سلسلة ×${multiplier(s.streak)}`, 32, 86);
+        }
+      }
+
+      if (s.flash > 0.05) {
+        ctx.fillStyle = `rgba(244, 237, 227, ${s.flash * 0.4})`;
+        ctx.fillRect(0, 0, view.w, view.h);
+      }
+    }
+
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const sound = new SoundEngine();
+    const state = createGameState();
+    const input = { jump: false, slide: false };
+
+    const startScreen = document.getElementById("startScreen");
+    const overScreen = document.getElementById("overScreen");
+    const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const finalScore = document.getElementById("finalScore");
+
+    let view = { w: window.innerWidth, h: window.innerHeight, ground: window.innerHeight * 0.74 };
+
+    function resize() {
+      view.w = canvas.width = window.innerWidth;
+      view.h = canvas.height = window.innerHeight;
+      view.ground = view.h * 0.74;
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    window.addEventListener("keydown", (e) => {
+      sound.init();
+      if (e.code === "Space" || e.code === "ArrowUp") {
+        e.preventDefault();
+        input.jump = true;
+      }
+      if (e.code === "ArrowDown") {
+        e.preventDefault();
+        input.slide = true;
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "Space" || e.code === "ArrowUp") input.jump = false;
+      if (e.code === "ArrowDown") input.slide = false;
+    });
+
+    window.addEventListener("touchstart", (e) => {
+      sound.init();
+      if (e.target.closest("button")) return;
+      const touchY = e.touches[0].clientY;
+      if (touchY < window.innerHeight * 0.5) {
+        input.jump = true;
+      } else {
+        input.slide = true;
+      }
+    }, { passive: true });
+
+    window.addEventListener("touchend", () => {
+      input.jump = false;
+      input.slide = false;
+    });
+
+    function launchRun() {
+      sound.init();
+      startScreen.classList.add("hidden");
+      overScreen.classList.add("hidden");
+      startRun(state, view);
+    }
+
+    startBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      launchRun();
+    });
+
+    restartBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      launchRun();
+    });
+
+    let lastTime = performance.now();
+
+    function loop(now) {
+      const dt = Math.min(0.04, (now - lastTime) / 1000);
+      lastTime = now;
+
+      updateGame(state, dt, input, view);
+
+      while (state.events.length > 0) {
+        const ev = state.events.shift();
+        if (ev.type === "jump") sound.jump();
+        else if (ev.type === "land") sound.land();
+        else if (ev.type === "slide") sound.slide();
+        else if (ev.type === "coin") sound.coin(ev.mult);
+        else if (ev.type === "die") sound.hit();
+        else if (ev.type === "over") {
+          finalScore.textContent = `مجموع النقاط: ${state.score} نقطة`;
+          overScreen.classList.remove("hidden");
+        }
+      }
+
+      sound.tick(dt, state.phase === "run");
+      renderFrame(ctx, state, view);
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
