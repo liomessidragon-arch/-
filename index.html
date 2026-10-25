@@ -88,14 +88,16 @@
       text-align: center;
       line-height: 1.6;
     }
-    .hidden {
-      display: none !important;
-    }
+    .hidden { display: none !important; }
+    #shootBtn { position:fixed; right:18px; bottom:24px; z-index:8; width:78px; height:78px; border-radius:50%; border:3px solid rgba(255,255,255,.8); background:rgba(190,48,38,.88); color:#fff; font:700 15px 'Readex Pro',sans-serif; box-shadow:0 4px 18px #0007; touch-action:manipulation; }
+    #shootBtn:active { transform:scale(.94); background:#e65a45; }
+    @media (min-width:800px) { #shootBtn { width:86px;height:86px;right:28px;bottom:28px; } }
   </style>
 </head>
 <body>
   <div id="game-container">
     <canvas id="gameCanvas"></canvas>
+    <button id="shootBtn" class="hidden" aria-label="إطلاق النار">إطلاق 🔫</button>
 
     <!-- واجهة البداية -->
     <div id="startScreen" class="overlay">
@@ -103,8 +105,7 @@
       <p class="subtitle">اركض، اقفز، وتفادَ العوائق عبر الأسطح</p>
       <button id="startBtn" class="btn">ابدأ الجري</button>
       <div class="controls-hint">
-        الأسهم يميناً ويساراً لتغيير المسار، أعلى للقفز، وأسفل للانزلاق.<br />
-        على الهاتف: المس الجهة اليمنى أو اليسرى لتبديل المسار، والوسط أعلى للقفز وأسفل للانزلاق.
+        الأسهم: أعلى للقفز، أسفل للانزلاق، وF لإطلاق النار.<br />على الهاتف: المس النصف العلوي للقفز والسفلي للانزلاق، واستخدم زر إطلاق النار.
       </div>
     </div>
 
@@ -319,6 +320,7 @@
         score: 0,
         bestScore: Number(localStorage.getItem("afaqBestScore") || 0),
         magnetT: 0, shield: false, multiplierT: 0,
+        health: 100, invulnT: 0, ammo: 10, weapon: "pistol", shots: [], enemies: [], nextEnemyX: 1100, shootCooldown: 0, kills: 0, medkits: [],
         missionTarget: 30, missionProgress: 0, missionDone: false,
         jumpT: 0,
         anim: 0,
@@ -408,6 +410,7 @@
       s.viewW = view.w;
       s.groundY = view.ground;
       s.obstacles.forEach(o => o.alive = false);
+      s.health=100; s.invulnT=0; s.ammo=10; s.weapon="pistol"; s.shots=[]; s.enemies=[]; s.nextEnemyX=view.w+900; s.shootCooldown=0; s.kills=0; s.medkits=[];
       s.coins.forEach(c => c.alive = false);
       s.floaters.forEach(f => f.alive = false);
       s.particles.forEach(p => p.alive = false);
@@ -605,7 +608,18 @@
       }
 
       const dx = s.speed * dt;
+      s.invulnT = Math.max(0, s.invulnT - dt);
+      s.shootCooldown = Math.max(0, s.shootCooldown - dt);
       s.scroll += dx;
+      s.nextEnemyX -= dx;
+      if (s.nextEnemyX < view.w + 100 && s.enemies.length < 4) {
+        s.enemies.push({x:view.w+180, y:view.ground-72, hp:2, alive:true, phase:s.rng()*6.28});
+        s.nextEnemyX = view.w + 950 + s.rng()*850;
+      }
+      s.enemies.forEach(e=>{ if(e.alive){ e.x-=dx; e.phase+=dt*5; if(e.x < -80)e.alive=false; } });
+      s.shots.forEach(b=>{ if(!b.alive)return; b.x+=760*dt; if(b.vy)b.y+=b.vy*dt; b.life-=dt; if(b.life<=0 || b.x>view.w+40)b.alive=false; for(const e of s.enemies){ if(e.alive && Math.abs(b.x-e.x)<34 && Math.abs(b.y-e.y)<45){ b.alive=false; e.hp--; if(e.hp<=0){e.alive=false;s.kills++;s.bonus+=50;floatText(s,e.x,e.y-25,"+50",true);} break; } } });
+      s.medkits.forEach(m=>{if(!m.alive)return;m.x-=dx;if(m.x<s.playerX+25&&m.x>s.playerX-35){m.alive=false;s.health=Math.min(100,s.health+30);floatText(s,s.playerX,s.groundY-145,"صحة +30",true);}if(m.x < -30)m.alive=false;});
+      if(s.distance>1200 && s.distance%2800 < dx && s.medkits.filter(m=>m.alive).length<1) s.medkits.push({x:view.w+250,alive:true});
       s.distance += dx;
       s.nextX -= dx;
       s.obstacles.forEach(o => {
@@ -667,15 +681,14 @@
             floatText(s, s.playerX, s.groundY - 110, "الدرع أنقذك!", true);
             return;
           }
-          s.phase = "dying";
-          s.deathT = 0;
-          s.flash = 0.85;
-          s.trauma = 0.8;
-          s.rotV = 5.2;
-          s.vy = 760;
-          s.onGround = false;
-          burst(s, s.playerX, s.groundY - 70, 20, ["#c45c3e", "#e8b15a", "#f4ede3"], 260, 900);
-          s.events.push({ type: "die" });
+          if (s.invulnT <= 0) {
+            s.health = Math.max(0, s.health - (o.kind === "gap" || o.kind === "spike" ? 28 : 18));
+            s.invulnT = 1.25; o.cleared = true; s.flash = 0.35; s.trauma = 0.35;
+            burst(s, s.playerX, s.groundY - 70, 12, ["#c45c3e", "#e8b15a", "#f4ede3"], 180, 650);
+            floatText(s,s.playerX,s.groundY-130,`-${o.kind === "gap" || o.kind === "spike" ? 28 : 18} صحة`,false);
+            s.events.push({ type: "hit" });
+            if (s.health <= 0) { s.phase = "dying"; s.deathT = 0; s.rotV = 5.2; s.vy = 760; s.onGround = false; s.events.push({type:"die"}); }
+          }
         } else if (!o.cleared && oRect.x + oRect.w < bodyRect.x) {
           o.cleared = true;
           s.streak += 1;
@@ -931,8 +944,14 @@
       drawObstacles(ctx, s, view.ground);
       drawCoins(ctx, s, view.ground);
 
+      // أعداء آليون، طلقات، وعلاج
+      s.enemies.forEach(e=>{if(!e.alive)return;ctx.save();ctx.translate(e.x,e.y+Math.sin(e.phase)*4);ctx.fillStyle="#353c48";ctx.fillRect(-22,-25,44,42);ctx.fillStyle="#e85c4f";ctx.fillRect(-13,-15,8,6);ctx.fillRect(5,-15,8,6);ctx.fillStyle="#69798a";ctx.fillRect(-28,10,56,8);ctx.restore();});
+      s.shots.forEach(b=>{if(!b.alive)return;ctx.fillStyle="#ffd76a";ctx.beginPath();ctx.ellipse(b.x,b.y,10,4,0,0,Math.PI*2);ctx.fill();});
+      s.medkits.forEach(m=>{if(!m.alive)return;ctx.fillStyle="#f5f5f5";ctx.fillRect(m.x-13,view.ground-105,26,26);ctx.fillStyle="#e34d4d";ctx.fillRect(m.x-3,view.ground-100,6,16);ctx.fillRect(m.x-8,view.ground-95,16,6);});
       const feetY = view.ground - s.posY;
+      if(s.invulnT>0 && Math.floor(s.invulnT*12)%2===0) ctx.globalAlpha=.45;
       drawHeroGraphic(ctx, s, s.playerX, feetY);
+      ctx.globalAlpha=1;
 
       s.particles.forEach(p => {
         if (!p.alive) return;
@@ -956,6 +975,9 @@
         ctx.textAlign = "left";
         ctx.fillText(`النتيجة: ${s.score}`, 32, 54);
 
+        // عداد الصحة والذخيرة والأعداء
+        ctx.fillStyle="#311d22"; ctx.fillRect(32,68,190,18); ctx.fillStyle=s.health>55?"#49c878":s.health>25?"#f0b64b":"#e34d4d"; ctx.fillRect(32,68,190*s.health/100,18); ctx.strokeStyle="#fff";ctx.strokeRect(32,68,190,18);
+        ctx.fillStyle="#fff";ctx.font="600 15px 'Readex Pro',sans-serif";ctx.textAlign="left";ctx.fillText(`الصحة ${Math.ceil(s.health)}%  •  🔫 ${s.ammo}`,32,106);
         if (s.magnetT > 0 || s.shield || s.multiplierT > 0) {
           ctx.fillStyle = "#8fe3ff"; ctx.font = "600 17px 'Readex Pro', sans-serif"; ctx.textAlign = "left";
           const active = [s.magnetT > 0 ? `مغناطيس ${s.magnetT.toFixed(0)}ث` : "", s.shield ? "درع" : "", s.multiplierT > 0 ? `×2 ${s.multiplierT.toFixed(0)}ث` : ""].filter(Boolean).join("  •  ");
@@ -986,6 +1008,7 @@
     const overScreen = document.getElementById("overScreen");
     const startBtn = document.getElementById("startBtn");
     const restartBtn = document.getElementById("restartBtn");
+    const shootBtn = document.getElementById("shootBtn");
     const finalScore = document.getElementById("finalScore");
 
     let view = { w: window.innerWidth, h: window.innerHeight, ground: window.innerHeight * 0.74 };
@@ -1040,9 +1063,20 @@
       sound.init();
       startScreen.classList.add("hidden");
       overScreen.classList.add("hidden");
+      shootBtn.classList.remove("hidden");
       startRun(state, view);
     }
 
+    function fireWeapon(){
+      if(state.phase!=="run" || state.shootCooldown>0 || state.ammo<=0)return;
+      state.ammo--; state.shootCooldown= state.weapon==="pistol" ? .28 : .09;
+      const target=state.enemies.filter(e=>e.alive && e.x>state.playerX).sort((a,b)=>a.x-b.x)[0];
+      const targetY=target?target.y-5:view.ground-78;
+      state.shots.push({x:state.playerX+38,y:view.ground-state.posY-78,life:1.2,alive:true, targetY});
+      if(target){const b=state.shots[state.shots.length-1]; b.vy=(targetY-b.y)/Math.max(.1,(target.x-b.x)/760);}
+    }
+    shootBtn.addEventListener("pointerdown",e=>{e.preventDefault();sound.init();fireWeapon();});
+    window.addEventListener("keydown",e=>{if(e.code==="KeyF"||e.code==="Enter"){e.preventDefault();fireWeapon();}});
     startBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       launchRun();
