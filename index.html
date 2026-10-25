@@ -218,9 +218,9 @@
     const JUMP_V = 1200;
     const SLIDE_DUR = 0.74;
     const LANE_CHANGE_DUR = 0.20;
-    const LANE_GROUND_OFFSETS = [-62, 0, 38];
-    const LANE_SCALES = [0.78, 1, 1.13];
-    const LANE_X_OFFSETS = [-24, 0, 24];
+    const LANE_GROUND_OFFSETS = [0, 0, 0];
+    const LANE_SCALES = [1, 1, 1];
+    const LANE_X_OFFSETS = [0, 0, 0];
     const HIT_W = 44;
     const HIT_H = 120;
     const SLIDE_H = 56;
@@ -289,20 +289,9 @@
       return { x: o.x + ix * scale, y: groundY - o.h * scale + iy * scale, w: Math.max(18 * scale, (o.w - ix * 2) * scale), h: Math.max(24 * scale, (o.h - iy) * scale) };
     }
 
-    function laneCollisionActive(s, lane) {
-      const visual = s.laneVisual ?? s.lane ?? 1;
-      return Math.abs(visual - lane) < 0.38;
-    }
-
-    function requestLaneChange(s, direction) {
-      if (s.phase !== "run" || s.laneChangeT > 0) return;
-      const next = Math.max(0, Math.min(2, s.lane + direction));
-      if (next === s.lane) return;
-      s.laneFrom = s.laneVisual;
-      s.lane = next;
-      s.laneTo = next;
-      s.laneChangeT = LANE_CHANGE_DUR;
-    }
+    // اللعبة تعتمد مساراً واحداً؛ نبقي حقول lane للتوافق مع بقية الكود فقط.
+    function laneCollisionActive(s, lane) { return true; }
+    function requestLaneChange(s, direction) { return; }
 
     function overlap(a, b) {
       return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -430,7 +419,7 @@
       o.alive = true;
       o.kind = kind;
       o.cleared = false;
-      o.lane = Math.floor(s.rng() * 3);
+      o.lane = 1;
       o.x = x;
       o.variant = Math.floor(s.rng() * BLOCKS.length);
       if (kind === "beam") { o.w = BEAM_W; o.h = BEAM_H; }
@@ -451,7 +440,7 @@
     function dropPrize(s, x, y, prize, lane = 1) {
       const c = s.coins.find(item => !item.alive);
       if (!c) return;
-      c.alive = true; c.x = x; c.y = y; c.spin = s.rng() * 6; c.prize = prize; c.lane = lane;
+      c.alive = true; c.x = x; c.y = y; c.spin = s.rng() * 6; c.prize = prize; c.lane = 1;
     }
 
     function sprayPrizes(s, x0, style, rich, lane = 1) {
@@ -556,25 +545,13 @@
       }
 
       s.speed = speedFor(s.distance);
+      // تثبيت اللاعب في مسار واحد؛ لا توجد انتقالات جانبية.
       const basePlayerX = s.viewW * 0.24;
-      if (input.laneLeft) { requestLaneChange(s, -1); input.laneLeft = false; }
-      if (input.laneRight) { requestLaneChange(s, 1); input.laneRight = false; }
-      if (s.laneChangeT > 0) {
-        s.laneChangeT = Math.max(0, s.laneChangeT - dt);
-        const progress = 1 - s.laneChangeT / LANE_CHANGE_DUR;
-        const eased = progress * progress * (3 - 2 * progress);
-        s.laneVisual = s.laneFrom + (s.laneTo - s.laneFrom) * eased;
-      } else {
-        s.laneVisual = s.lane;
-      }
-      s.playerX = laneX(basePlayerX, Math.round(s.laneVisual));
-      if (s.laneChangeT > 0) {
-        const fromX = laneX(basePlayerX, Math.round(s.laneFrom));
-        const toX = laneX(basePlayerX, s.laneTo);
-        const progress = 1 - s.laneChangeT / LANE_CHANGE_DUR;
-        const eased = progress * progress * (3 - 2 * progress);
-        s.playerX = fromX + (toX - fromX) * eased;
-      }
+      s.lane = s.laneFrom = s.laneTo = s.laneVisual = 1;
+      s.laneChangeT = 0;
+      s.playerX = basePlayerX;
+      input.laneLeft = false;
+      input.laneRight = false;
 
       if (input.jump) s.jumpBuf = BUFFER; else s.jumpBuf = Math.max(0, s.jumpBuf - dt);
       if (input.slide) s.slideBuf = BUFFER; else s.slideBuf = Math.max(0, s.slideBuf - dt);
@@ -589,7 +566,7 @@
         burst(s, s.playerX, s.groundY - 8, 7, ["#d7b48a", "#f4ede3"], 90, 400);
       } else if (s.jumpBuf > 0 && (s.onGround || s.coyote > 0)) {
         s.slideT = 0;
-        s.vy = JUMP_V * laneScale(s.lane);
+        s.vy = JUMP_V;
         s.onGround = false;
         s.coyote = 0;
         s.jumpBuf = 0;
@@ -642,18 +619,17 @@
 
       const playerScale = laneScale(s.laneVisual);
       const playerGround = laneGround(view, s.laneVisual);
-      const bodyW = (s.slideBlend > 0.5 ? SLIDE_W : HIT_W) * playerScale;
-      const bodyH = (s.slideBlend > 0.5 ? SLIDE_H : HIT_H) * playerScale;
+      const bodyW = HIT_W + (SLIDE_W - HIT_W) * s.slideBlend;
+      const bodyH = HIT_H + (SLIDE_H - HIT_H) * s.slideBlend;
       const bodyRect = { x: s.playerX - bodyW / 2, y: playerGround - s.posY - bodyH, w: bodyW, h: bodyH };
 
       s.coins.forEach(c => {
         if (!c.alive) return;
         if (!laneCollisionActive(s, c.lane ?? 1)) return;
-        const coinGround = laneGround(view, c.lane ?? 1);
-        const coinScale = laneScale(c.lane ?? 1);
-        const cy = coinGround - c.y * coinScale;
-        const distSq = (c.x - s.playerX) ** 2 + (cy - (bodyRect.y + bodyH * 0.5)) ** 2;
-        if (distSq < 48 * 48) {
+        const cy = view.ground - c.y;
+        const coinRect = { x: c.x - 17, y: cy - 17, w: 34, h: 34 };
+        if (overlap(bodyRect, coinRect)) {
+          // Mark dead immediately so the reward is removed on this frame and cannot score twice.
           c.alive = false;
           s.streak += 1;
           const mult = multiplier(s.streak);
@@ -694,7 +670,7 @@
       }
 
       s.score = totalScore(s.distance, s.bonus);
-      s.anim += dt * (8.5 + s.speed / 150);
+      s.anim += dt * 10.5;
     }
 
 
@@ -749,7 +725,7 @@
         ctx.fillRect(bx, view.ground - 160 - (i % 4) * 25, 140, 200);
       }
 
-      // أسطح المدينة متصلة بصرياً، مع ثلاث طبقات عمق واضحة وغير منفصلة تماماً.
+      // أسطح المدينة متصلة بصرياً، مع سطح مدينة واحد متصل.
       ctx.fillStyle = "#8b7058";
       ctx.fillRect(0, view.ground - 70, view.w, view.h - (view.ground - 70));
       ctx.fillStyle = "#c4a078";
@@ -780,16 +756,16 @@
         ctx.translate(-x, -(feetY - 60));
       }
 
-      const sliding = s.slideBlend > 0.45;
+      const sliding = s.slideT > 0 || s.slideBlend > 0.08;
       const airborne = s.posY > 1;
       const group = sliding ? "slide" : (airborne ? "jump" : "run");
       const frames = spriteFrames[group] || [];
-      const frameIndex = frames.length ? Math.floor(s.anim * (sliding ? 5 : 1.7)) % frames.length : 0;
+      const frameIndex = frames.length ? (sliding ? Math.floor(s.slideAge * 9) : Math.floor(s.anim * 1.25)) % frames.length : 0;
       const img = frames[frameIndex];
-      const lanePos = s.laneVisual ?? 1;
-      const scale = laneScale(lanePos);
-      const drawW = (sliding ? 176 : 148) * scale;
-      const drawH = (sliding ? 144 : 148) * scale;
+      const scale = 1;
+      const pose = s.slideBlend;
+      const drawW = 148 + (176 - 148) * pose;
+      const drawH = 148 + (144 - 148) * pose;
       const drawX = x - drawW / 2;
       const drawY = feetY - drawH;
 
@@ -818,8 +794,8 @@
     function drawObstacles(ctx, s, ground) {
       s.obstacles.forEach(o => {
         if (!o.alive) return;
-        const scale = laneScale(o.lane ?? 1);
-        const laneFloor = ground + LANE_GROUND_OFFSETS[o.lane ?? 1];
+        const scale = 1;
+        const laneFloor = ground;
         const rect = obstacleRect(o, laneFloor, scale);
         const ox = o.x;
         const ow = o.w * scale;
@@ -877,8 +853,8 @@
     function drawCoins(ctx, s, ground) {
       s.coins.forEach(c => {
         if (!c.alive) return;
-        const scale = laneScale(c.lane ?? 1);
-        const laneFloor = ground + LANE_GROUND_OFFSETS[c.lane ?? 1];
+        const scale = 1;
+        const laneFloor = ground;
         const cy = laneFloor - c.y * scale;
         ctx.save();
         ctx.translate(c.x, cy);
@@ -907,8 +883,7 @@
       drawObstacles(ctx, s, view.ground);
       drawCoins(ctx, s, view.ground);
 
-      const playerScale = laneScale(s.laneVisual ?? 1);
-      const feetY = laneGround(view, s.laneVisual ?? 1) - s.posY;
+      const feetY = view.ground - s.posY;
       drawHeroGraphic(ctx, s, s.playerX, feetY);
 
       s.particles.forEach(p => {
@@ -995,9 +970,7 @@
       const touch = e.changedTouches[0];
       const touchX = touch.clientX;
       const touchY = touch.clientY;
-      if (touchX < window.innerWidth * 0.30) input.laneLeft = true;
-      else if (touchX > window.innerWidth * 0.70) input.laneRight = true;
-      else if (touchY < window.innerHeight * 0.52) input.jump = true;
+      if (touchY < window.innerHeight * 0.52) input.jump = true;
       else input.slide = true;
     }, { passive: true });
 
