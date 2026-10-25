@@ -783,14 +783,23 @@
       const airborne = s.posY > 1;
       const group = sliding ? "slide" : (airborne ? "jump" : "run");
       const frames = spriteFrames[group] || [];
-      const frameIndex = frames.length ? (sliding ? Math.floor(s.slideAge * 9) : Math.floor(s.anim * 1.25)) % frames.length : 0;
+      // دورة الركض: ترتيب الإطارات يبرز تبدل الخطوات، مع نبضة جسم خفيفة متزامنة.
+      const runOrder = [0, 2, 4, 1, 3, 5];
+      const runFrame = Math.floor(s.anim * 1.25) % Math.max(1, frames.length);
+      const frameIndex = frames.length
+        ? (sliding ? Math.floor(s.slideAge * 9) % frames.length
+          : (airborne ? Math.floor(s.anim * 1.25) % frames.length
+            : (runOrder[runFrame % runOrder.length] ?? runFrame)))
+        : 0;
       const img = frames[frameIndex];
       const scale = 1;
       const pose = s.slideBlend;
       const drawW = 148 + (176 - 148) * pose;
       const drawH = 148 + (144 - 148) * pose;
+      const runBob = (!sliding && !airborne && s.onGround && s.phase === "run")
+        ? Math.abs(Math.sin(s.anim * 1.25)) * 3.2 : 0;
       const drawX = x - drawW / 2;
-      const drawY = feetY - drawH;
+      const drawY = feetY - drawH - runBob;
 
       // ظل خفيف أسفل الشخصية
       ctx.fillStyle = "rgba(20, 16, 20, 0.28)";
